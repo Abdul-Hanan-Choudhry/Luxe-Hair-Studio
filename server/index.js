@@ -16,6 +16,16 @@ const app = express();
 // Security middleware
 app.use(helmet());
 
+// Set permissive Referrer-Policy and Content-Security-Policy for images
+app.use((req, res, next) => {
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' https://images.pexels.com data:; script-src 'self'; style-src 'self' 'unsafe-inline';"
+  );
+  next();
+});
+
 // Rate limiting
 if (process.env.NODE_ENV === 'production') {
   const limiter = rateLimit({
@@ -66,6 +76,18 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV 
   });
+});
+
+// Serve static files from the frontend build
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, '../dist')));
+
+// Serve index.html for all non-API routes (for client-side routing)
+app.get(/^\/(?!api).*/, (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
 // Error handling middleware
