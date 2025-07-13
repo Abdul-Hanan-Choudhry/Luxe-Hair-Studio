@@ -139,9 +139,21 @@ router.post('/', [
     };
     const result = await db.collection('bookings').insertOne(bookingDoc);
     const booking = { ...bookingDoc, _id: result.insertedId };
+    
     // Send confirmation email
     try {
-      await sendBookingConfirmation(booking);
+      // Populate service and staff data for email
+      const populatedBooking = { ...booking };
+      if (booking.serviceId) {
+        const service = await db.collection('services').findOne({ _id: new ObjectId(booking.serviceId) });
+        populatedBooking.serviceId = service;
+      }
+      if (booking.staffId) {
+        const staff = await db.collection('staff').findOne({ _id: new ObjectId(booking.staffId) });
+        populatedBooking.staffId = staff;
+      }
+      
+      await sendBookingConfirmation(populatedBooking);
       await db.collection('bookings').updateOne({ _id: booking._id }, { $set: { confirmationSent: true } });
     } catch (emailError) {
       console.error('Email sending failed:', emailError);
@@ -158,24 +170,71 @@ router.put('/:id', async (req, res) => {
     const db = req.app.locals.db;
     const { id } = req.params;
     const updates = req.body;
-    const booking = await db.collection('bookings').findOneAndUpdate(
-      { _id: new ObjectId(id) },
-      { $set: { ...updates, updatedAt: new Date() } },
-      { returnDocument: 'after' }
-    );
-    if (!booking.value) {
+    
+    console.log('Updating booking:', { id, updates });
+    
+    // Validate ObjectId format
+    if (!ObjectId.isValid(id)) {
+      console.log('Invalid ObjectId format:', id);
+      return res.status(400).json({ message: 'Invalid booking ID format' });
+    }
+    
+    console.log('ObjectId is valid, proceeding with update...');
+    
+    // First check if booking exists
+    const existingBooking = await db.collection('bookings').findOne({ _id: new ObjectId(id) });
+    if (!existingBooking) {
+      console.log('Booking not found in database');
       return res.status(404).json({ message: 'Booking not found' });
     }
+    
+    // Update the booking
+    const result = await db.collection('bookings').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { ...updates, updatedAt: new Date() } }
+    );
+    
+    console.log('Update result:', result);
+    
+    if (result.matchedCount === 0) {
+      console.log('No booking matched for update');
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+    
+    // Get the updated booking
+    const updatedBooking = await db.collection('bookings').findOne({ _id: new ObjectId(id) });
+    
+    console.log('Booking updated successfully, checking for email...');
+    
     // Send update email if status changed
     if (updates.status && ['confirmed', 'cancelled'].includes(updates.status)) {
       try {
-        await sendBookingUpdate(booking.value);
+        console.log('Preparing to send email for status change...');
+        // Populate service and staff data for email
+        const populatedBooking = { ...updatedBooking };
+        if (updatedBooking.serviceId) {
+          const service = await db.collection('services').findOne({ _id: new ObjectId(updatedBooking.serviceId) });
+          populatedBooking.serviceId = service;
+          console.log('Service populated:', service ? 'Yes' : 'No');
+        }
+        if (updatedBooking.staffId) {
+          const staff = await db.collection('staff').findOne({ _id: new ObjectId(updatedBooking.staffId) });
+          populatedBooking.staffId = staff;
+          console.log('Staff populated:', staff ? 'Yes' : 'No');
+        }
+        
+        await sendBookingUpdate(populatedBooking);
+        console.log('Email sent successfully');
       } catch (emailError) {
         console.error('Email sending failed:', emailError);
       }
     }
-    res.json(booking.value);
+    
+    console.log('Sending success response');
+    console.log('Response data:', updatedBooking);
+    res.json(updatedBooking);
   } catch (error) {
+    console.error('Error updating booking:', error);
     res.status(500).json({ message: 'Error updating booking', error: error.message });
   }
 });
@@ -186,14 +245,34 @@ router.delete('/:id', async (req, res) => {
     const db = req.app.locals.db;
     const { id } = req.params;
     
-    const booking = await db.collection('bookings').findOneAndDelete({ _id: new ObjectId(id) });
+    console.log('Deleting booking:', { id });
     
-    if (!booking.value) {
+    if (!ObjectId.isValid(id)) {
+      console.log('Invalid ObjectId format:', id);
+      return res.status(400).json({ message: 'Invalid booking ID format' });
+    }
+    
+    // First check if booking exists
+    const existingBooking = await db.collection('bookings').findOne({ _id: new ObjectId(id) });
+    if (!existingBooking) {
+      console.log('Booking not found in database');
       return res.status(404).json({ message: 'Booking not found' });
     }
     
+    // Delete the booking
+    const result = await db.collection('bookings').deleteOne({ _id: new ObjectId(id) });
+    
+    console.log('Delete result:', result);
+    
+    if (result.deletedCount === 0) {
+      console.log('No booking was deleted');
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+    
+    console.log('Booking deleted successfully');
     res.json({ message: 'Booking deleted successfully' });
   } catch (error) {
+    console.error('Error deleting booking:', error);
     res.status(500).json({ message: 'Error deleting booking', error: error.message });
   }
 });

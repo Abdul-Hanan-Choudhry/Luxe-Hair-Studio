@@ -141,6 +141,9 @@ export const verifyToken = (req, res, next) => {
 router.get('/me', verifyToken, async (req, res) => {
   try {
     const db = req.app.locals.db;
+    if (!ObjectId.isValid(req.user.userId)) {
+      return res.status(400).json({ message: 'Invalid user ID format' });
+    }
     const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.userId) });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });

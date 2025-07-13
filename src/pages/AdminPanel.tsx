@@ -91,7 +91,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ auth }) => {
         complete: 'completed' as const
       };
       
-      await bookingAPI.updateBooking(bookingId, { status: statusMap[action] });
+      console.log('Updating booking:', { bookingId, action, status: statusMap[action] });
+      
+      const result = await bookingAPI.updateBooking(bookingId, { status: statusMap[action] });
+      console.log('Update result:', result);
       
       // Reload data
       const [bookingsData, statsData] = await Promise.all([
@@ -102,6 +105,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ auth }) => {
       setStats(statsData);
     } catch (error) {
       console.error('Error updating booking:', error);
+      console.error('Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
+      });
       alert('Failed to update booking. Please try again.');
     }
   };
