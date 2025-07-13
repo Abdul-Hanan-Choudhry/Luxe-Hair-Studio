@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import { body, validationResult } from 'express-validator';
 import bcrypt from 'bcryptjs';
+import { ObjectId } from 'mongodb';
 const router = express.Router();
 
 // Register admin user
@@ -140,7 +141,7 @@ export const verifyToken = (req, res, next) => {
 router.get('/me', verifyToken, async (req, res) => {
   try {
     const db = req.app.locals.db;
-    const user = await db.collection('users').findOne({ _id: req.user.userId });
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.userId) });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
