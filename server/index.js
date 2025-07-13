@@ -1,5 +1,5 @@
 import express from 'express';
-import mongoose from 'mongoose';
+import { MongoClient, ServerApiVersion } from 'mongodb';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -12,6 +12,43 @@ import staffRoutes from './routes/staff.js';
 import emailRoutes from './routes/email.js';
 
 const app = express();
+
+// MongoDB Connection
+let db;
+const connectDB = async () => {
+  try {
+    const uri = process.env.MONGODB_URI || "mongodb+srv://abdulhananch404:Abdul%40123@cluster0.edajo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+    
+    const client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      }
+    });
+
+    await client.connect();
+    
+    // Send a ping to confirm a successful connection
+    await client.db("admin").command({ ping: 1 });
+    console.log("✅ Connected to MongoDB!");
+    
+    // Get the database instance
+    db = client.db("luxe-hair-studio");
+    
+    // Make db available globally
+    app.locals.db = db;
+    
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err.message);
+    console.log('💡 Check your MONGODB_URI in .env file');
+    console.log('💡 Make sure your MongoDB Atlas cluster is accessible');
+    console.log('💡 Verify your username, password, and database name');
+    
+    // Don't exit the process, let it continue without database
+    console.log('⚠️  Server will continue without database connection');
+  }
+};
 
 // Security middleware
 app.use(helmet());
@@ -51,16 +88,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/luxe-hair-studio', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('✅ Connected to MongoDB'))
-.catch(err => {
-  console.error('❌ MongoDB connection error:', err);
-  console.log('💡 Make sure MongoDB is running on your system');
-  console.log('💡 You can start MongoDB with: mongod');
-});
+connectDB();
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -74,7 +102,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV 
+    environment: process.env.NODE_ENV,
+    database: db ? 'Connected' : 'Not Connected'
   });
 });
 
