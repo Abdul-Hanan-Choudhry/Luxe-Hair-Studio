@@ -1,33 +1,25 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import Booking from '../models/Booking.js';
-import Service from '../models/Service.js';
-import Staff from '../models/Staff.js';
 import { sendBookingConfirmation, sendBookingUpdate } from '../utils/emailService.js';
 const router = express.Router();
+
+// Helper to convert string to ObjectId
+import { ObjectId } from 'mongodb';
 
 // Get all bookings with filters
 router.get('/', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const { status, date, staffId, search, page = 1, limit = 50 } = req.query;
-    
     let query = {};
-    
     // Apply filters
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
+    if (status && status !== 'all') query.status = status;
     if (date && date !== 'all') {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
       switch (date) {
         case 'today':
-          query.date = {
-            $gte: today,
-            $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
-          };
+          query.date = { $gte: today, $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000) };
           break;
         case 'upcoming':
           query.date = { $gte: today };
@@ -37,11 +29,7 @@ router.get('/', async (req, res) => {
           break;
       }
     }
-    
-    if (staffId) {
-      query.staffId = staffId;
-    }
-    
+    if (staffId) query.staffId = staffId;
     if (search) {
       query.$or = [
         { customerName: { $regex: search, $options: 'i' } },
@@ -49,16 +37,13 @@ router.get('/', async (req, res) => {
         { customerPhone: { $regex: search, $options: 'i' } }
       ];
     }
-    
-    const bookings = await Booking.find(query)
-      .populate('serviceId', 'name price duration category')
-      .populate('staffId', 'name title')
+    const bookings = await db.collection('bookings')
+      .find(query)
       .sort({ date: 1, time: 1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-    
-    const total = await Booking.countDocuments(query);
-    
+      .skip((page - 1) * limit)
+      .limit(Number(limit))
+      .toArray();
+    const total = await db.collection('bookings').countDocuments(query);
     res.json({
       bookings,
       totalPages: Math.ceil(total / limit),
@@ -74,31 +59,25 @@ router.get('/', async (req, res) => {
 // Get booking statistics
 router.get('/stats', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
-    const stats = await Promise.all([
-      Booking.countDocuments(),
-      Booking.countDocuments({ status: 'pending' }),
-      Booking.countDocuments({ status: 'confirmed' }),
-      Booking.countDocuments({ 
-        date: {
-          $gte: today,
-          $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
-        }
-      }),
-      Booking.aggregate([
+    const [totalBookings, pendingBookings, confirmedBookings, todayBookings, revenueAgg] = await Promise.all([
+      db.collection('bookings').countDocuments(),
+      db.collection('bookings').countDocuments({ status: 'pending' }),
+      db.collection('bookings').countDocuments({ status: 'confirmed' }),
+      db.collection('bookings').countDocuments({ date: { $gte: today, $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000) } }),
+      db.collection('bookings').aggregate([
         { $match: { status: { $in: ['confirmed', 'completed'] } } },
         { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-      ])
+      ]).toArray()
     ]);
-    
     res.json({
-      totalBookings: stats[0],
-      pendingBookings: stats[1],
-      confirmedBookings: stats[2],
-      todayBookings: stats[3],
-      revenue: stats[4][0]?.total || 0
+      totalBookings,
+      pendingBookings,
+      confirmedBookings,
+      todayBookings,
+      revenue: revenueAgg[0]?.total || 0
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching stats', error: error.message });
@@ -120,33 +99,28 @@ router.post('/', [
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    
+    const db = req.app.locals.db;
     const { serviceId, staffId, customerName, customerEmail, customerPhone, date, time, notes } = req.body;
-    
     // Verify service and staff exist
     const [service, staff] = await Promise.all([
-      Service.findById(serviceId),
-      Staff.findById(staffId)
+      db.collection('services').findOne({ _id: new ObjectId(serviceId) }),
+      db.collection('staff').findOne({ _id: new ObjectId(staffId) })
     ]);
-    
     if (!service || !staff) {
       return res.status(404).json({ message: 'Service or staff not found' });
     }
-    
     // Check for conflicts
-    const existingBooking = await Booking.findOne({
+    const existingBooking = await db.collection('bookings').findOne({
       staffId,
       date: new Date(date),
       time,
       status: { $in: ['pending', 'confirmed'] }
     });
-    
     if (existingBooking) {
       return res.status(409).json({ message: 'Time slot already booked' });
     }
-    
     // Create booking
-    const booking = new Booking({
+    const bookingDoc = {
       serviceId,
       staffId,
       customerName,
@@ -155,23 +129,23 @@ router.post('/', [
       date: new Date(date),
       time,
       notes,
-      totalPrice: service.price
-    });
-    
-    await booking.save();
-    
-    // Populate the booking for response
-    await booking.populate('serviceId staffId');
-    
+      totalPrice: service.price,
+      status: 'pending',
+      paymentStatus: 'pending',
+      reminderSent: false,
+      confirmationSent: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    const result = await db.collection('bookings').insertOne(bookingDoc);
+    const booking = { ...bookingDoc, _id: result.insertedId };
     // Send confirmation email
     try {
       await sendBookingConfirmation(booking);
-      booking.confirmationSent = true;
-      await booking.save();
+      await db.collection('bookings').updateOne({ _id: booking._id }, { $set: { confirmationSent: true } });
     } catch (emailError) {
       console.error('Email sending failed:', emailError);
     }
-    
     res.status(201).json(booking);
   } catch (error) {
     res.status(500).json({ message: 'Error creating booking', error: error.message });
@@ -181,29 +155,26 @@ router.post('/', [
 // Update booking
 router.put('/:id', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const { id } = req.params;
     const updates = req.body;
-    
-    const booking = await Booking.findByIdAndUpdate(
-      id,
-      { ...updates, updatedAt: new Date() },
-      { new: true, runValidators: true }
-    ).populate('serviceId staffId');
-    
-    if (!booking) {
+    const booking = await db.collection('bookings').findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: { ...updates, updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+    if (!booking.value) {
       return res.status(404).json({ message: 'Booking not found' });
     }
-    
     // Send update email if status changed
     if (updates.status && ['confirmed', 'cancelled'].includes(updates.status)) {
       try {
-        await sendBookingUpdate(booking);
+        await sendBookingUpdate(booking.value);
       } catch (emailError) {
         console.error('Email sending failed:', emailError);
       }
     }
-    
-    res.json(booking);
+    res.json(booking.value);
   } catch (error) {
     res.status(500).json({ message: 'Error updating booking', error: error.message });
   }
@@ -212,11 +183,12 @@ router.put('/:id', async (req, res) => {
 // Delete booking
 router.delete('/:id', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const { id } = req.params;
     
-    const booking = await Booking.findByIdAndDelete(id);
+    const booking = await db.collection('bookings').findOneAndDelete({ _id: new ObjectId(id) });
     
-    if (!booking) {
+    if (!booking.value) {
       return res.status(404).json({ message: 'Booking not found' });
     }
     
@@ -229,10 +201,11 @@ router.delete('/:id', async (req, res) => {
 // Get available time slots
 router.get('/available-slots/:staffId/:date', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const { staffId, date } = req.params;
     const { duration = 60 } = req.query;
     
-    const staff = await Staff.findById(staffId);
+    const staff = await db.collection('staff').findOne({ _id: new ObjectId(staffId) });
     if (!staff) {
       return res.status(404).json({ message: 'Staff not found' });
     }
@@ -245,11 +218,11 @@ router.get('/available-slots/:staffId/:date', async (req, res) => {
     }
     
     // Get existing bookings for this staff on this date
-    const existingBookings = await Booking.find({
+    const existingBookings = await db.collection('bookings').find({
       staffId,
       date: new Date(date),
       status: { $in: ['pending', 'confirmed'] }
-    });
+    }).toArray();
     
     // Generate time slots
     const slots = [];

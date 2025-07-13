@@ -1,20 +1,15 @@
 import express from 'express';
-import Staff from '../models/Staff.js';
 const router = express.Router();
 
 // Get all staff
 router.get('/', async (req, res) => {
   try {
+    const db = req.app.locals.db;
     const { serviceId, isActive } = req.query;
-    
     let query = {};
     if (isActive !== undefined && isActive !== 'all') query.isActive = isActive === 'true';
     if (serviceId) query.services = serviceId;
-    
-    const staff = await Staff.find(query)
-      .populate('services', 'name category')
-      .sort({ name: 1 });
-    
+    const staff = await db.collection('staff').find(query).sort({ name: 1 }).toArray();
     res.json(staff);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching staff', error: error.message });
@@ -24,7 +19,8 @@ router.get('/', async (req, res) => {
 // Get staff by ID
 router.get('/:id', async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id).populate('services');
+    const db = req.app.locals.db;
+    const staff = await db.collection('staff').findOne({ _id: req.params.id });
     if (!staff) {
       return res.status(404).json({ message: 'Staff member not found' });
     }
@@ -37,10 +33,12 @@ router.get('/:id', async (req, res) => {
 // Create new staff member (admin only)
 router.post('/', async (req, res) => {
   try {
-    const staff = new Staff(req.body);
-    await staff.save();
-    await staff.populate('services');
-    res.status(201).json(staff);
+    const db = req.app.locals.db;
+    const staff = req.body;
+    staff.createdAt = new Date();
+    staff.updatedAt = new Date();
+    const result = await db.collection('staff').insertOne(staff);
+    res.status(201).json({ ...staff, _id: result.insertedId });
   } catch (error) {
     res.status(500).json({ message: 'Error creating staff member', error: error.message });
   }
@@ -49,17 +47,18 @@ router.post('/', async (req, res) => {
 // Update staff member (admin only)
 router.put('/:id', async (req, res) => {
   try {
-    const staff = await Staff.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    ).populate('services');
+    const db = req.app.locals.db;
+    const staff = await db.collection('staff').findOneAndUpdate(
+      { _id: req.params.id },
+      { $set: req.body },
+      { returnDocument: 'after' }
+    );
     
-    if (!staff) {
+    if (!staff.value) {
       return res.status(404).json({ message: 'Staff member not found' });
     }
     
-    res.json(staff);
+    res.json(staff.value);
   } catch (error) {
     res.status(500).json({ message: 'Error updating staff member', error: error.message });
   }
@@ -68,9 +67,10 @@ router.put('/:id', async (req, res) => {
 // Delete staff member (admin only)
 router.delete('/:id', async (req, res) => {
   try {
-    const staff = await Staff.findByIdAndDelete(req.params.id);
+    const db = req.app.locals.db;
+    const staff = await db.collection('staff').findOneAndDelete({ _id: req.params.id });
     
-    if (!staff) {
+    if (!staff.value) {
       return res.status(404).json({ message: 'Staff member not found' });
     }
     

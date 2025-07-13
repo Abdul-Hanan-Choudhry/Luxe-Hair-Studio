@@ -1,7 +1,7 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { body, validationResult } from 'express-validator';
-import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
 const router = express.Router();
 
 // Register admin user
@@ -17,16 +17,31 @@ router.post('/register', [
     }
     
     const { name, email, password, role = 'admin' } = req.body;
+    const db = req.app.locals.db;
     
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await db.collection('users').findOne({ email });
     if (existingUser) {
       return res.status(409).json({ message: 'User already exists' });
     }
     
+    // Hash password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
     // Create new user
-    const user = new User({ name, email, password, role });
-    await user.save();
+    const userDoc = {
+      name,
+      email,
+      password: hashedPassword,
+      role,
+      isActive: true,
+      lastLogin: null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    const result = await db.collection('users').insertOne(userDoc);
+    const user = { ...userDoc, _id: result.insertedId };
     
     // Generate JWT token
     const token = jwt.sign(
@@ -62,22 +77,25 @@ router.post('/login', [
     }
     
     const { email, password } = req.body;
+    const db = req.app.locals.db;
     
     // Find user
-    const user = await User.findOne({ email, isActive: true });
+    const user = await db.collection('users').findOne({ email, isActive: true });
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
     
     // Check password
-    const isPasswordValid = await user.comparePassword(password);
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
     
     // Update last login
-    user.lastLogin = new Date();
-    await user.save();
+    await db.collection('users').updateOne(
+      { _id: user._id },
+      { $set: { lastLogin: new Date() } }
+    );
     
     // Generate JWT token
     const token = jwt.sign(
@@ -121,11 +139,13 @@ export const verifyToken = (req, res, next) => {
 // Get current user
 router.get('/me', verifyToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-password');
+    const db = req.app.locals.db;
+    const user = await db.collection('users').findOne({ _id: req.user.userId });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    res.json(user);
+    const { password, ...userWithoutPassword } = user;
+    res.json(userWithoutPassword);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching user', error: error.message });
   }
